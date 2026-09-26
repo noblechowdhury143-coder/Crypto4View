@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080c17">
+<title>Crypto 4-View Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080c17;color:#f3f6ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:980px;margin:auto;padding:12px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+h1{font-size:20px;margin:0}.sub{font-size:11px;color:#8994aa}
+.status{font-size:11px;color:#8994aa;margin-top:3px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#32d583;margin-right:5px}
+.section{background:#11182a;border:1px solid #273149;border-radius:14px;padding:10px;margin-bottom:10px}
+.section-title{font-size:12px;font-weight:800;color:#aeb8cc;margin-bottom:8px}
+.market-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.market-card{background:#0b1120;border:1px solid #273149;border-radius:11px;padding:9px;min-width:0}
+.market-head{display:flex;align-items:center;gap:5px}
+.market-select{width:100%;min-width:0;background:#0b1120;color:#fff;border:1px solid #34415d;border-radius:7px;padding:5px;font-weight:800;font-size:12px}
+.price{font-size:20px;font-weight:800;margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bdt{font-size:12px;color:#d8def0;margin-top:2px}
+.change{font-size:11px;font-weight:700;margin-top:5px}.up{color:#32d583}.down{color:#ff6478}
+.hl{display:flex;justify-content:space-between;color:#8994aa;font-size:10px;margin-top:8px}
+.alert-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.alert-box{background:#0b1120;border:1px solid #273149;border-radius:10px;padding:8px}
+.alert-name{font-size:11px;font-weight:800;margin-bottom:5px}
+.alert-row{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.alert-row label{font-size:9px;color:#8994aa}.alert-row input{width:100%;margin-top:2px;background:#080d18;color:#fff;border:1px solid #273149;border-radius:6px;padding:6px;font-size:11px}
+.btnrow{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+button{background:#6877ff;color:#fff;border:0;border-radius:7px;padding:7px 10px;font-weight:700;font-size:11px}
+button.secondary{background:#0b1120;border:1px solid #34415d;color:#dce2f2}
+.chart-card{background:#11182a;border:1px solid #273149;border-radius:14px;padding:10px;margin-bottom:10px}
+.chart-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.chart-name{font-weight:800;font-size:14px}
+.tf{display:flex;gap:4px;overflow:auto;margin:7px 0}.tf button{padding:5px 8px;background:#0b1120;border:1px solid #273149;color:#8994aa}.tf button.active{color:#fff;border-color:#6877ff}
+.chart{height:240px;background:#090f1d;border:1px solid #273149;border-radius:9px;overflow:hidden}.chart canvas{width:100%;height:100%;display:block}
+.note{font-size:10px;color:#707b91;line-height:1.45}
+@media(max-width:650px){.market-grid,.alert-grid{grid-template-columns:1fr 1fr}.market-card{padding:8px}.price{font-size:17px}.chart{height:220px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <h1>⚡ Crypto 4-View</h1>
+      <div class="status" id="status"><span class="dot"></span>Connecting…</div>
+    </div>
+    <div style="text-align:right">
+      <div id="fx" style="font-size:12px;font-weight:800">1 USD = — BDT</div>
+      <div class="sub">USD + BDT</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">LIVE MARKETS</div>
+    <div class="market-grid" id="markets"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">PRICE ALERTS <span class="sub">Upper / Lower values are in the quote currency shown in each market</span></div>
+    <div class="alert-grid" id="alerts"></div>
+    <div class="btnrow">
+      <button id="saveAlerts">Save alerts</button>
+      <button class="secondary" id="notifyBtn">Enable notifications</button>
+    </div>
+  </div>
+
+  <div id="charts"></div>
+
+  <div class="note">
+    Market data is read directly from public exchange endpoints. This page does not use a personal server.
+    Browser notification/background reliability depends on the browser and whether the page is allowed to run in the background.
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const DEFAULTS=[
+ {id:"usdtusd",name:"USDT/USD",source:"coinbase",product:"USDT-USD",quote:"USD"},
+ {id:"ltcusdt",name:"LTC/USDT",source:"binance",symbol:"LTCUSDT",quote:"USDT"},
+ {id:"hmstrusdt",name:"HMSTR/USDT",source:"binance",symbol:"HMSTRUSDT",quote:"USDT"},
+ {id:"spcxbusdt",name:"SPCXB/USDT",source:"binance",symbol:"SPCXBUSDT",quote:"USDT"}
+];
+
+let markets=JSON.parse(localStorage.getItem("dashboardMarkets")||"null")||DEFAULTS;
+let fx=0, ws=null, binanceSymbols=new Set(), candles={};
+
+function loadState(){
+  markets.forEach(m=>{
+    m.price=null;m.open=null;m.high=null;m.low=null;m.last=null;m.lastPrice=null;
+    m.upper=localStorage.getItem("upper_"+m.id)||"";
+    m.lower=localStorage.getItem("lower_"+m.id)||"";
+    m.tf=localStorage.getItem("tf_"+m.id)||"15m";
+  });
+}
+loadState();
+
+function fmt(v){
+ if(v==null||isNaN(v))return "—";
+ return Number(v).toLocaleString(undefined,{maximumFractionDigits:Number(v)<1?6:2});
+}
+function saveMarkets(){localStorage.setItem("dashboardMarkets",JSON.stringify(markets));}
+function quoteLabel(m){return m.quote||"USD";}
+
+function render(){
+ const mg=document.getElementById("markets");
+ mg.innerHTML=markets.map((m,i)=>`
+ <div class="market-card">
+  <div class="market-head">
+   <select class="market-select" data-i="${i}">
+    <option value="${m.id}">${m.name}</option>
+    <option disabled>────────</option>
+    ${["BTC/USDT","ETH/USDT","LTC/USDT","HMSTR/USDT","SPCXB/USDT","SOL/USDT","BNB/USDT","XRP/USDT","DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","TRX/USDT","SUI/USDT","TON/USDT"].map(x=>{
+      const id=x.replace("/","").toLowerCase();
+      return `<option value="${id}">${x}</option>`;
+    }).join("")}
+   </select>
+  </div>
+  <div class="price">${fmt(m.price)} <span class="sub">${quoteLabel(m)}</span></div>
+  <div class="bdt">${m.quote==="USD"?(m.price==null?"—":"৳ "+fmt(m.price*fx)):(m.price==null?"—":"≈ ৳ "+fmt(m.price*fx))} <span class="sub">BDT</span></div>
+  <div class="${m.open!=null&&m.price>=m.open?'change up':'change down'}">${m.open==null?"—":((m.price-m.open)/m.open*100>=0?"▲ ":"▼ ")+Math.abs((m.price-m.open)/m.open*100).toFixed(2)+"%"} <span class="sub">24h</span></div>
+  <div class="hl"><span>H ${fmt(m.high)}</span><span>L ${fmt(m.low)}</span></div>
+ </div>`).join("");
+
+ document.querySelectorAll(".market-select").forEach(sel=>{
+   sel.value=markets[Number(sel.dataset.i)].id;
+   sel.addEventListener("change",()=>changeMarket(Number(sel.dataset.i),sel.value));
+ });
+
+ const ag=document.getElementById("alerts");
+ ag.innerHTML=markets.map((m,i)=>`
+ <div class="alert-box">
+  <div class="alert-name">${m.name}</div>
+  <div class="alert-row">
+   <label>Upper<input class="levelInput" data-i="${i}" data-k="upper" type="number" step="any" value="${m.upper}" placeholder="e.g. 110"></label>
+   <label>Lower<input class="levelInput" data-i="${i}" data-k="lower" type="number" step="any" value="${m.lower}" placeholder="e.g. 100"></label>
+  </div>
+ </div>`).join("");
+
+ document.querySelectorAll(".levelInput").forEach(el=>el.addEventListener("change",()=>{
+   markets[Number(el.dataset.i)][el.dataset.k]=el.value;
+   localStorage.setItem(el.dataset.k+"_"+markets[Number(el.dataset.i)].id,el.value); if(window.AndroidAlerts){var mm=markets[Number(el.dataset.i)];AndroidAlerts.saveAlert(mm.id,mm.upper||"",mm.lower||"");}
+ }));
+
+ renderCharts();
+}
+
+function renderCharts(){
+ const root=document.getElementById("charts");
+ root.innerHTML=markets.map((m,i)=>`
+ <div class="chart-card">
+  <div class="chart-top"><div class="chart-name">${m.name}</div><span class="sub">${m.source}</span></div>
+  <div class="tf" data-i="${i}">
+   ${["1m","5m","15m","1h","4h","1d"].map(t=>`<button class="${m.tf===t?"active":""}" data-tf="${t}">${t}</button>`).join("")}
+  </div>
+  <div class="chart"><canvas id="chart${i}"></canvas></div>
+ </div>`).join("");
+ document.querySelectorAll(".tf button").forEach(b=>b.addEventListener("click",()=>{
+   const i=Number(b.parentElement.dataset.i),m=markets[i];
+   m.tf=b.dataset.tf;localStorage.setItem("tf_"+m.id,m.tf);
+   loadCandle(i);renderCharts();
+ }));
+ markets.forEach((m,i)=>drawChart(i));
+}
+
+async function loadExchangeInfo(){
+ try{
+  const r=await fetch("https://api.binance.com/api/v3/exchangeInfo");
+  const j=await r.json();
+  j.symbols.filter(x=>x.status==="TRADING").forEach(x=>binanceSymbols.add(x.symbol));
+ }catch(e){}
+}
+
+function resolveSelection(id){
+ const known={
+  "usdtusd":{id:"usdtusd",name:"USDT/USD",source:"coinbase",product:"USDT-USD",quote:"USD"},
+  "ltcusdt":{id:"ltcusdt",name:"LTC/USDT",source:"binance",symbol:"LTCUSDT",quote:"USDT"},
+  "hmstrusdt":{id:"hmstrusdt",name:"HMSTR/USDT",source:"binance",symbol:"HMSTRUSDT",quote:"USDT"},
+  "spcxbusdt":{id:"spcxbusdt",name:"SPCXB/USDT",source:"binance",symbol:"SPCXBUSDT",quote:"USDT"}
+ };
+ if(known[id])return known[id];
+ let sym=id.toUpperCase();
+ if(sym.endsWith("USDT") && binanceSymbols.has(sym))
+   return {id:id,name:sym.slice(0,-4)+"/USDT",source:"binance",symbol:sym,quote:"USDT"};
+ return null;
+}
+
+function changeMarket(i,id){
+ const next=resolveSelection(id);
+ if(!next){alert("এই marketটি বর্তমানে supported exchange pair হিসেবে পাওয়া যায়নি।");render();return;}
+ if(markets.some((m,k)=>k!==i&&m.id===next.id)){alert("এই marketটি অন্য panel-এ already selected আছে।");render();return;}
+ markets[i]=next;loadState();saveMarkets();connect();loadCandle(i);render();
+}
+
+function connect(){
+ if(ws){try{ws.close()}catch(e){}}
+ const bs=markets.filter(m=>m.source==="binance");
+ if(!bs.length){document.getElementById("status").innerHTML='<span class="dot"></span>Live';return;}
+ const streams=bs.map(m=>m.symbol.toLowerCase()+"@ticker").join("/");
+ try{ws=new WebSocket("wss://stream.binance.com:9443/stream?streams="+streams);}
+ catch(e){return;}
+ ws.onopen=()=>document.getElementById("status").innerHTML='<span class="dot"></span>Live';
+ ws.onclose=()=>{document.getElementById("status").textContent="Reconnecting…";setTimeout(connect,4000)};
+ ws.onerror=()=>{try{ws.close()}catch(e){}};
+ ws.onmessage=ev=>{
+  try{
+   const d=JSON.parse(ev.data).data,s=d.s;
+   const m=markets.find(x=>x.symbol===s);if(!m)return;
+   const p=Number(d.c),prev=m.lastPrice;
+   if(prev!=null){
+    if(m.upper!==""&&prev<Number(m.upper)&&p>=Number(m.upper))notify(m.name,"Upper level crossed: "+fmt(p)+" "+m.quote);
+    if(m.lower!==""&&prev>Number(m.lower)&&p<=Number(m.lower))notify(m.name,"Lower level crossed: "+fmt(p)+" "+m.quote);
+   }
+   m.lastPrice=p;m.price=p;m.open=Number(d.o);m.high=Number(d.h);m.low=Number(d.l);m.last=Date.now();
+   updateTop();
+  }catch(e){}
+ };
+}
+
+async function loadCoinbase(){
+ const m=markets.find(x=>x.source==="coinbase");if(!m)return;
+ try{
+  const r=await fetch("https://api.exchange.coinbase.com/products/USDT-USD/ticker");
+  const j=await r.json();m.price=Number(j.price);m.last=Date.now();m.open=null;m.high=null;m.low=null;updateTop();
+ }catch(e){}
+}
+
+async function loadCandle(i){
+ const m=markets[i];if(m.source!=="binance")return;
+ try{
+  const r=await fetch("https://api.binance.com/api/v3/klines?symbol="+m.symbol+"&interval="+m.tf+"&limit=60");
+  const j=await r.json();if(Array.isArray(j)){candles[m.id]=j;drawChart(i);}
+ }catch(e){}
+}
+
+async function loadCoinbaseCandle(i){
+ const m=markets[i];if(m.source!=="coinbase")return;
+ // Coinbase candle API has different granularity; use a compact 5m series.
+ try{
+  const r=await fetch("https://api.exchange.coinbase.com/products/USDT-USD/candles?granularity=300");
+  const j=await r.json();if(Array.isArray(j)){candles[m.id]=j.reverse();drawChart(i);}
+ }catch(e){}
+}
+
+function drawChart(i){
+ const m=markets[i],cv=document.getElementById("chart"+i);if(!cv)return;
+ const rows=candles[m.id]||[],dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+ cv.width=w*dpr;cv.height=h*dpr;const c=cv.getContext("2d");c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);
+ if(!rows.length){c.fillStyle="#8994aa";c.font="11px system-ui";c.fillText("Loading candlestick data…",10,20);return;}
+ let norm=rows.map(r=>m.source==="coinbase"?{o:+r[3],h:+r[2],l:+r[1],cl:+r[4]}:{o:+r[1],h:+r[2],l:+r[3],cl:+r[4]});
+ const vals=norm.flatMap(x=>[x.h,x.l]),max=Math.max(...vals),min=Math.min(...vals),pad=(max-min)*.08||1,hi=max+pad,lo=min-pad,cw=w/norm.length;
+ const y=v=>h-(v-lo)/(hi-lo)*h;
+ c.strokeStyle="#273149";for(let g=1;g<4;g++){let gy=g*h/4;c.beginPath();c.moveTo(0,gy);c.lineTo(w,gy);c.stroke();}
+ norm.forEach((x,k)=>{const xx=k*cw+cw/2,up=x.cl>=x.o;c.strokeStyle=up?"#32d583":"#ff6478";c.fillStyle=c.strokeStyle;c.beginPath();c.moveTo(xx,y(x.l));c.lineTo(xx,y(x.h));c.stroke();const top=y(Math.max(x.o,x.cl)),bh=Math.max(2,Math.abs(y(x.o)-y(x.cl)));c.fillRect(xx-cw*.3,top,cw*.6,bh);});
+}
+
+function updateTop(){
+ const cards=document.querySelectorAll(".market-card");
+ markets.forEach((m,i)=>{
+  const card=cards[i];if(!card)return;
+  card.querySelector(".price").innerHTML=fmt(m.price)+' <span class="sub">'+quoteLabel(m)+'</span>';
+  card.querySelector(".bdt").innerHTML=(m.price==null?"—":"≈ ৳ "+fmt(m.price*fx))+' <span class="sub">BDT</span>';
+  const pct=m.open?((m.price-m.open)/m.open*100):null,chg=card.querySelector(".change");
+  chg.className=pct==null?"change":("change "+(pct>=0?"up":"down"));
+  chg.innerHTML=pct==null?"—":(pct>=0?"▲ ":"▼ ")+Math.abs(pct).toFixed(2)+"% <span class=\"sub\">24h</span>";
+  card.querySelector(".hl").innerHTML="<span>H "+fmt(m.high)+"</span><span>L "+fmt(m.low)+"</span>";
+ });
+}
+
+async function loadFx(){
+ try{const r=await fetch("https://open.er-api.com/v6/latest/USD"),j=await r.json();if(j.rates&&j.rates.BDT){fx=Number(j.rates.BDT);document.getElementById("fx").textContent="1 USD = "+fx.toFixed(2)+" BDT";updateTop();}}catch(e){}
+}
+
+function notify(title,body){
+ if(window.Notification&&Notification.permission==="granted")try{new Notification(title,{body})}catch(e){}
+}
+document.getElementById("notifyBtn").onclick=async()=>{
+ if(!("Notification"in window)){alert("এই browser local HTML page থেকে notification permission দিতে পারছে না। HTTPS/PWA version লাগবে।");return;}
+ try{const p=await Notification.requestPermission();if(p!=="granted")alert("Notification permission Allow করতে হবে।")}catch(e){alert("এই page থেকে notification চালু করা যাচ্ছে না। HTTPS/PWA version ব্যবহার করতে হবে।")}
+};
+document.getElementById("saveAlerts").onclick=()=>{markets.forEach(m=>{localStorage.setItem("upper_"+m.id,m.upper);localStorage.setItem("lower_"+m.id,m.lower)});alert("Alert levels saved on this phone.");};
+
+window.addEventListener("resize",()=>markets.forEach((m,i)=>drawChart(i)));
+
+render();
+loadExchangeInfo().then(()=>render());
+loadFx();
+loadCoinbase();
+markets.forEach((m,i)=>{loadCandle(i);loadCoinbaseCandle(i)});
+connect();
+setInterval(loadFx,900000);
+setInterval(loadCoinbase,10000);
+setInterval(()=>markets.forEach((m,i)=>{loadCandle(i);loadCoinbaseCandle(i)}),30000);
+
+})();
+</script>
+</body>
+</html>
